@@ -49,7 +49,7 @@ public abstract class PlayerEntityAttackMixin extends LivingEntity {
         SwapHelper.swapChestWithHotbar(player, chestplateSlot);
         this.maceswap$swappedHotbarSlot = chestplateSlot;
 
-        player.stopFallFlying();
+        player.stopGliding();
     }
 
     @Inject(method = "attack", at = @At("RETURN"))
