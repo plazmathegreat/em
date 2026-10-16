@@ -23,7 +23,7 @@ public final class SwapHelper {
             return false;
         }
 
-        if (!player.isFallFlying()) {
+        if (!player.isGliding()) {
             return false;
         }
 
@@ -70,7 +70,7 @@ public final class SwapHelper {
         inventory.setStack(hotbarSlot, chestStack);
 
         inventory.markDirty();
-        if (!player.getWorld().isClient()) {
+        if (!player.getEntityWorld().isClient()) {
             player.playerScreenHandler.sendContentUpdates();
         }
     }
