@@ -1,100 +1,165 @@
-package com.example.maceswap.util;
+package com.example.maceswap.mixin;
 
-import net.minecraft.component.DataComponentTypes;
-import net.minecraft.component.type.EquippableComponent;
-import net.minecraft.entity.EquipmentSlot;
+import com.example.maceswap.util.GlidingFallTracker;
+import com.example.maceswap.util.SwapHelper;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.network.ClientPlayNetworkHandler;
+import net.minecraft.client.network.ClientPlayerInteractionManager;
+import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.entity.player.PlayerInventory;
-import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
-import net.minecraft.registry.tag.ItemTags;
+import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
+import net.minecraft.screen.slot.SlotActionType;
+import net.minecraft.text.Text;
+import net.minecraft.util.Formatting;
+import org.spongepowered.asm.mixin.Final;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-public final class SwapHelper {
+@Mixin(ClientPlayerInteractionManager.class)
+public abstract class ClientPlayerInteractionManagerMixin {
 
-    private SwapHelper() {}
+    @Unique
+    private static final int CHEST_ARMOR_SLOT_INDEX = 6;
 
-    /**
-     * Checks if the player can perform the Elytra -> Chestplate + Attribute Mace swap:
-     * 1. Currently gliding with an Elytra in the Chest slot
-     * 2. Has a Chestplate in the hotbar (slots 0-8)
-     * 3. Either holding a Mace OR has a Mace in the hotbar (slots 0-8) to attribute-swap from a Sword/Axe
-     */
-    public static boolean canPerformMaceSwap(PlayerEntity player) {
-        if (player == null || player.isSpectator()) {
-            return false;
-        }
+    @Shadow
+    @Final
+    private MinecraftClient client;
 
-        if (!player.isGliding()) {
-            return false;
-        }
+    @Shadow
+    @Final
+    private ClientPlayNetworkHandler networkHandler;
 
-        ItemStack chestStack = player.getEquippedStack(EquipmentSlot.CHEST);
-        if (!isGlider(chestStack)) {
-            return false;
-        }
+    @Shadow
+    public abstract void clickSlot(int syncId, int slotId, int button, SlotActionType actionType, PlayerEntity player);
 
-        // Must either hold a Mace OR have a Mace in hotbar for attribute swapping
-        ItemStack mainHand = player.getMainHandStack();
-        return mainHand.isOf(Items.MACE) || findMaceHotbarSlot(player.getInventory()) != -1;
-    }
+    // Tracks the hotbar slot holding the swapped Elytra while the Chestplate is equipped
+    @Unique
+    private int maceswap$elytraHotbarSlot = -1;
 
-    public static boolean isGlider(ItemStack stack) {
-        if (stack.isEmpty()) return false;
-        return stack.isOf(Items.ELYTRA) || stack.contains(DataComponentTypes.GLIDER);
-    }
+    // Tracks the original weapon slot (Sword/Axe) during a same-tick Attribute Swap
+    @Unique
+    private int maceswap$originalWeaponSlot = -1;
 
-    public static boolean isChestplate(ItemStack stack) {
-        if (stack.isEmpty() || isGlider(stack)) {
-            return false;
-        }
-        if (stack.isIn(ItemTags.CHEST_ARMOR)) {
-            return true;
-        }
-        EquippableComponent equippable = stack.get(DataComponentTypes.EQUIPPABLE);
-        return equippable != null && equippable.slot() == EquipmentSlot.CHEST;
-    }
+    // Number of ticks to monitor for a Wind Burst bounce after attacking
+    @Unique
+    private int maceswap$windBurstMonitorTicks = 0;
 
-    /**
-     * Finds the first hotbar slot (0-8) containing a Chestplate.
-     */
-    public static int findChestplateHotbarSlot(PlayerInventory inventory) {
-        for (int i = 0; i < 9; i++) {
-            ItemStack stack = inventory.getStack(i);
-            if (isChestplate(stack)) {
-                return i;
-            }
-        }
-        return -1;
-    }
+    @Inject(method = "attackEntity", at = @At("HEAD"))
+    private void maceswap$clientBeforeAttack(PlayerEntity player, Entity target, CallbackInfo ci) {
+        this.maceswap$originalWeaponSlot = -1;
 
-    /**
-     * Finds the first hotbar slot (0-8) containing a Mace.
-     */
-    public static int findMaceHotbarSlot(PlayerInventory inventory) {
-        for (int i = 0; i < 9; i++) {
-            ItemStack stack = inventory.getStack(i);
-            if (stack.isOf(Items.MACE)) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    public static void swapChestWithHotbar(PlayerEntity player, int hotbarSlot) {
-        if (hotbarSlot < 0 || hotbarSlot > 8) {
+        if (!SwapHelper.canPerformMaceSwap(player)) {
             return;
         }
 
         PlayerInventory inventory = player.getInventory();
-        ItemStack chestStack = player.getEquippedStack(EquipmentSlot.CHEST);
-        ItemStack hotbarStack = inventory.getStack(hotbarSlot);
+        int chestplateSlot = SwapHelper.findChestplateHotbarSlot(inventory);
+        if (chestplateSlot == -1) {
+            return;
+        }
 
-        player.equipStack(EquipmentSlot.CHEST, hotbarStack);
-        inventory.setStack(hotbarSlot, chestStack);
+        int maceSlot = SwapHelper.findMaceHotbarSlot(inventory);
+        boolean holdingMace = player.getMainHandStack().isOf(Items.MACE);
+        if (!holdingMace && maceSlot == -1) {
+            return;
+        }
 
-        inventory.markDirty();
-        if (!player.getEntityWorld().isClient()) {
-            player.playerScreenHandler.sendContentUpdates();
+        // 1. Preserve accumulated gliding fall distance
+        float effectiveFall = ((GlidingFallTracker) player).maceswap$getEffectiveFallDistance();
+        if (effectiveFall > 1.5F) {
+            player.fallDistance = effectiveFall;
+        }
+
+        // 2. Swap Elytra (Chest Armor Slot 6) -> Chestplate (Hotbar Slot)
+        this.clickSlot(
+                player.playerScreenHandler.syncId,
+                CHEST_ARMOR_SLOT_INDEX,
+                chestplateSlot,
+                SlotActionType.SWAP,
+                player
+        );
+        this.maceswap$elytraHotbarSlot = chestplateSlot;
+
+        // 3. Cancel gliding state so the server registers a falling smash attack
+        player.stopGliding();
+
+        // 4. Attribute Swap: If holding a Sword/Axe, switch active slot to the Mace BEFORE the attack packet is sent
+        if (!holdingMace && maceSlot != -1) {
+            this.maceswap$originalWeaponSlot = inventory.selectedSlot;
+            inventory.selectedSlot = maceSlot;
+            this.networkHandler.sendPacket(new UpdateSelectedSlotC2SPacket(maceSlot));
+        }
+
+        // Monitor the next 8 ticks (0.4s) for Wind Burst upward bounce velocity
+        this.maceswap$windBurstMonitorTicks = 8;
+
+        player.sendMessage(
+                Text.literal("⚡ Attribute Mace Smash! (Fall: " + String.format("%.1f", effectiveFall) + "m)")
+                        .formatted(Formatting.GOLD),
+                true
+        );
+    }
+
+    @Inject(method = "attackEntity", at = @At("RETURN"))
+    private void maceswap$clientAfterAttack(PlayerEntity player, Entity target, CallbackInfo ci) {
+        // 5. Immediately swap back from Mace -> Original Weapon (Sword/Axe) after the attack packet is dispatched
+        if (this.maceswap$originalWeaponSlot != -1) {
+            PlayerInventory inventory = player.getInventory();
+            inventory.selectedSlot = this.maceswap$originalWeaponSlot;
+            this.networkHandler.sendPacket(new UpdateSelectedSlotC2SPacket(this.maceswap$originalWeaponSlot));
+            this.maceswap$originalWeaponSlot = -1;
+        }
+    }
+
+    @Inject(method = "tick", at = @At("HEAD"))
+    private void maceswap$onTick(CallbackInfo ci) {
+        if (this.maceswap$elytraHotbarSlot == -1 || this.maceswap$windBurstMonitorTicks <= 0) {
+            return;
+        }
+
+        PlayerEntity player = this.client.player;
+        if (player == null) {
+            this.maceswap$elytraHotbarSlot = -1;
+            this.maceswap$windBurstMonitorTicks = 0;
+            return;
+        }
+
+        this.maceswap$windBurstMonitorTicks--;
+
+        // 6. Check if the player got Wind Bursted (upward velocity spike after Mace smash)
+        // Wind Burst or smash bounce pushes player.getVelocity().y significantly above 0.15
+        double verticalVelocity = player.getVelocity().y;
+        boolean windBursted = verticalVelocity > 0.15D;
+
+        if (windBursted && player.currentScreenHandler == player.playerScreenHandler) {
+            // Re-equip the Elytra from the hotbar slot back to Chest Armor Slot 6
+            if (SwapHelper.isGlider(player.getInventory().getStack(this.maceswap$elytraHotbarSlot))) {
+                this.clickSlot(
+                        player.playerScreenHandler.syncId,
+                        CHEST_ARMOR_SLOT_INDEX,
+                        this.maceswap$elytraHotbarSlot,
+                        SlotActionType.SWAP,
+                        player
+                );
+                player.sendMessage(
+                        Text.literal("🪽 Wind Burst Detected — Elytra Re-Equipped!")
+                                .formatted(Formatting.AQUA),
+                        true
+                );
+            }
+            ((GlidingFallTracker) player).maceswap$resetTrackedFallDistance();
+            this.maceswap$elytraHotbarSlot = -1;
+            this.maceswap$windBurstMonitorTicks = 0;
+        } else if (this.maceswap$windBurstMonitorTicks == 0) {
+            // Window expired without a Wind Burst bounce: keep the Chestplate equipped for ground combat!
+            ((GlidingFallTracker) player).maceswap$resetTrackedFallDistance();
+            this.maceswap$elytraHotbarSlot = -1;
         }
     }
 }
