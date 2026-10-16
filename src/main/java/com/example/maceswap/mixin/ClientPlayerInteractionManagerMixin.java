@@ -72,7 +72,6 @@ public abstract class ClientPlayerInteractionManagerMixin {
             player.fallDistance = effectiveFall;
         }
 
-        // 1. Swap Elytra (Chest Armor Slot 6) -> Chestplate (Hotbar Slot)
         this.clickSlot(
                 player.playerScreenHandler.syncId,
                 CHEST_ARMOR_SLOT_INDEX,
@@ -82,15 +81,39 @@ public abstract class ClientPlayerInteractionManagerMixin {
         );
         this.maceswap$elytraHotbarSlot = chestplateSlot;
 
-        // 2. Cancel gliding state
         player.stopGliding();
 
-        // 3. Attribute Swap: Switch from Sword/Axe -> Mace before the attack packet is sent
         if (!holdingMace && maceSlot != -1) {
             this.maceswap$originalWeaponSlot = inventory.getSelectedSlot();
             inventory.setSelectedSlot(maceSlot);
             this.networkHandler.sendPacket(new UpdateSelectedSlotC2SPacket(maceSlot));
         }
 
-        // 4. Monitor next 8 ticks for Wind Burst upward bounce velocity
-        this
+        this.maceswap$windBurstMonitorTicks = 8;
+
+        player.sendMessage(
+                Text.literal("Attribute Mace Smash! (Fall: " + String.format("%.1f", effectiveFall) + "m)")
+                        .formatted(Formatting.GOLD),
+                true
+        );
+    }
+
+    @Inject(method = "attackEntity", at = @At("RETURN"))
+    private void maceswap$clientAfterAttack(PlayerEntity player, Entity target, CallbackInfo ci) {
+        if (this.maceswap$originalWeaponSlot != -1) {
+            PlayerInventory inventory = player.getInventory();
+            inventory.setSelectedSlot(this.maceswap$originalWeaponSlot);
+            this.networkHandler.sendPacket(new UpdateSelectedSlotC2SPacket(this.maceswap$originalWeaponSlot));
+            this.maceswap$originalWeaponSlot = -1;
+        }
+    }
+
+    @Inject(method = "tick", at = @At("HEAD"))
+    private void maceswap$onTick(CallbackInfo ci) {
+        if (this.maceswap$elytraHotbarSlot == -1 \vert{}\vert{} this.maceswap$windBurstMonitorTicks <= 0) {
+            return;
+        }
+
+        PlayerEntity player = this.client.player;
+        if (player == null) {
+            this.maceswap$elytraHotbarSlot =
