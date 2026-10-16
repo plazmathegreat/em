@@ -13,13 +13,14 @@ public final class SwapHelper {
 
     private SwapHelper() {}
 
+    /**
+     * Checks if the player can perform the Elytra -> Chestplate + Attribute Mace swap:
+     * 1. Currently gliding with an Elytra in the Chest slot
+     * 2. Has a Chestplate in the hotbar (slots 0-8)
+     * 3. Either holding a Mace OR has a Mace in the hotbar (slots 0-8) to attribute-swap from a Sword/Axe
+     */
     public static boolean canPerformMaceSwap(PlayerEntity player) {
         if (player == null || player.isSpectator()) {
-            return false;
-        }
-
-        ItemStack mainHand = player.getMainHandStack();
-        if (!mainHand.isOf(Items.MACE)) {
             return false;
         }
 
@@ -28,7 +29,13 @@ public final class SwapHelper {
         }
 
         ItemStack chestStack = player.getEquippedStack(EquipmentSlot.CHEST);
-        return isGlider(chestStack);
+        if (!isGlider(chestStack)) {
+            return false;
+        }
+
+        // Must either hold a Mace OR have a Mace in hotbar for attribute swapping
+        ItemStack mainHand = player.getMainHandStack();
+        return mainHand.isOf(Items.MACE) || findMaceHotbarSlot(player.getInventory()) != -1;
     }
 
     public static boolean isGlider(ItemStack stack) {
@@ -47,10 +54,26 @@ public final class SwapHelper {
         return equippable != null && equippable.slot() == EquipmentSlot.CHEST;
     }
 
+    /**
+     * Finds the first hotbar slot (0-8) containing a Chestplate.
+     */
     public static int findChestplateHotbarSlot(PlayerInventory inventory) {
         for (int i = 0; i < 9; i++) {
             ItemStack stack = inventory.getStack(i);
             if (isChestplate(stack)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Finds the first hotbar slot (0-8) containing a Mace.
+     */
+    public static int findMaceHotbarSlot(PlayerInventory inventory) {
+        for (int i = 0; i < 9; i++) {
+            ItemStack stack = inventory.getStack(i);
+            if (stack.isOf(Items.MACE)) {
                 return i;
             }
         }
