@@ -1,82 +1,100 @@
-package com.example.maceswap.mixin;
+package com.example.maceswap.util;
 
-import com.example.maceswap.util.GlidingFallTracker;
-import com.example.maceswap.util.SwapHelper;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.network.ClientPlayerInteractionManager;
-import net.minecraft.entity.Entity;
+import net.minecraft.component.DataComponentTypes;
+import net.minecraft.component.type.EquippableComponent;
+import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.screen.slot.SlotActionType;
-import org.spongepowered.asm.mixin.Final;
-import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Shadow;
-import org.spongepowered.asm.mixin.Unique;
-import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import net.minecraft.entity.player.PlayerInventory;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+import net.minecraft.registry.tag.ItemTags;
 
-@Mixin(ClientPlayerInteractionManager.class)
-public abstract class ClientPlayerInteractionManagerMixin {
+public final class SwapHelper {
 
-    @Unique
-    private static final int CHEST_ARMOR_SLOT_INDEX = 6;
+    private SwapHelper() {}
 
-    @Shadow
-    @Final
-    private MinecraftClient client;
-
-    @Shadow
-    public abstract void clickSlot(int syncId, int slotId, int button, SlotActionType actionType, PlayerEntity player);
-
-    @Unique
-    private int maceswap$clientSwappedSlot = -1;
-
-    @Inject(method = "attackEntity", at = @At("HEAD"))
-    private void maceswap$clientBeforeAttack(PlayerEntity player, Entity target, CallbackInfo ci) {
-        this.maceswap$clientSwappedSlot = -1;
-
-        if (this.client.isInSingleplayer()) {
-            return;
+    /**
+     * Checks if the player can perform the Elytra -> Chestplate + Attribute Mace swap:
+     * 1. Currently gliding with an Elytra in the Chest slot
+     * 2. Has a Chestplate in the hotbar (slots 0-8)
+     * 3. Either holding a Mace OR has a Mace in the hotbar (slots 0-8) to attribute-swap from a Sword/Axe
+     */
+    public static boolean canPerformMaceSwap(PlayerEntity player) {
+        if (player == null || player.isSpectator()) {
+            return false;
         }
 
-        if (!SwapHelper.canPerformMaceSwap(player)) {
-            return;
+        if (!player.isGliding()) {
+            return false;
         }
 
-        int chestplateSlot = SwapHelper.findChestplateHotbarSlot(player.getInventory());
-        if (chestplateSlot == -1) {
-            return;
+        ItemStack chestStack = player.getEquippedStack(EquipmentSlot.CHEST);
+        if (!isGlider(chestStack)) {
+            return false;
         }
 
-        float effectiveFall = ((GlidingFallTracker) player).maceswap$getEffectiveFallDistance();
-        if (effectiveFall > 1.5F) {
-            player.fallDistance = effectiveFall;
-        }
-
-        this.clickSlot(
-                player.playerScreenHandler.syncId,
-                CHEST_ARMOR_SLOT_INDEX,
-                chestplateSlot,
-                SlotActionType.SWAP,
-                player
-        );
-
-        player.stopGliding();
-        this.maceswap$clientSwappedSlot = chestplateSlot;
+        // Must either hold a Mace OR have a Mace in hotbar for attribute swapping
+        ItemStack mainHand = player.getMainHandStack();
+        return mainHand.isOf(Items.MACE) || findMaceHotbarSlot(player.getInventory()) != -1;
     }
 
-    @Inject(method = "attackEntity", at = @At("RETURN"))
-    private void maceswap$clientAfterAttack(PlayerEntity player, Entity target, CallbackInfo ci) {
-        if (this.maceswap$clientSwappedSlot != -1) {
-            this.clickSlot(
-                    player.playerScreenHandler.syncId,
-                    CHEST_ARMOR_SLOT_INDEX,
-                    this.maceswap$clientSwappedSlot,
-                    SlotActionType.SWAP,
-                    player
-            );
-            ((GlidingFallTracker) player).maceswap$resetTrackedFallDistance();
-            this.maceswap$clientSwappedSlot = -1;
+    public static boolean isGlider(ItemStack stack) {
+        if (stack.isEmpty()) return false;
+        return stack.isOf(Items.ELYTRA) || stack.contains(DataComponentTypes.GLIDER);
+    }
+
+    public static boolean isChestplate(ItemStack stack) {
+        if (stack.isEmpty() || isGlider(stack)) {
+            return false;
+        }
+        if (stack.isIn(ItemTags.CHEST_ARMOR)) {
+            return true;
+        }
+        EquippableComponent equippable = stack.get(DataComponentTypes.EQUIPPABLE);
+        return equippable != null && equippable.slot() == EquipmentSlot.CHEST;
+    }
+
+    /**
+     * Finds the first hotbar slot (0-8) containing a Chestplate.
+     */
+    public static int findChestplateHotbarSlot(PlayerInventory inventory) {
+        for (int i = 0; i < 9; i++) {
+            ItemStack stack = inventory.getStack(i);
+            if (isChestplate(stack)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Finds the first hotbar slot (0-8) containing a Mace.
+     */
+    public static int findMaceHotbarSlot(PlayerInventory inventory) {
+        for (int i = 0; i < 9; i++) {
+            ItemStack stack = inventory.getStack(i);
+            if (stack.isOf(Items.MACE)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    public static void swapChestWithHotbar(PlayerEntity player, int hotbarSlot) {
+        if (hotbarSlot < 0 || hotbarSlot > 8) {
+            return;
+        }
+
+        PlayerInventory inventory = player.getInventory();
+        ItemStack chestStack = player.getEquippedStack(EquipmentSlot.CHEST);
+        ItemStack hotbarStack = inventory.getStack(hotbarSlot);
+
+        player.equipStack(EquipmentSlot.CHEST, hotbarStack);
+        inventory.setStack(hotbarSlot, chestStack);
+
+        inventory.markDirty();
+        if (!player.getEntityWorld().isClient()) {
+            player.playerScreenHandler.sendContentUpdates();
         }
     }
 }
