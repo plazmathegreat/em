@@ -61,7 +61,7 @@ public abstract class ClientPlayerInteractionManagerMixin {
                 player
         );
 
-        player.stopFallFlying();
+        player.stopGliding();
         this.maceswap$clientSwappedSlot = chestplateSlot;
     }
 
